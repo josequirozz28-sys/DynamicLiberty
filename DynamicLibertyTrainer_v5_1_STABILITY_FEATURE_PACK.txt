@@ -1,0 +1,2291 @@
+// Dynamic Liberty Trainer v5.1 IMGUI STABILITY + FEATURE PACK
+// GTA IV Complete Edition + CLEO Redux (x86)
+// Steam Deck controller-native trainer
+// Requires: ImGuiReduxWin32.cleo
+//
+// Controls:
+// LB + RB = open / close
+// D-pad Up/Down = move
+// A = select
+// B = back
+//
+// Uses GTA IV native names from the Sanny Builder GTA IV definition set.
+// No memory editing is used in this build.
+
+log("Dynamic Liberty Trainer v5.1 IMGUI STABILITY + FEATURE PACK loaded");
+
+// ------------------------------------------------------------
+// CONTROLLER
+// These are the button IDs already proven on the user's setup.
+// ------------------------------------------------------------
+const PAD = 0;
+const BTN = {
+    LB: 4,
+    RB: 6,
+    UP: 8,
+    DOWN: 9,
+    A: 16,
+    B: 17
+};
+
+// ------------------------------------------------------------
+// STATE
+// ------------------------------------------------------------
+let menuOpen = false;
+let comboLatch = false;
+let menuStack = [];
+let selected = 0;
+let lastRender = 0;
+let controlLocked = false;
+
+let frozenTime = false;
+let frozenHour = 12;
+let lastFreezeUpdate = 0;
+
+let bodyguards = [];
+const MAX_BODYGUARDS = 10;
+let bodyguardModel = 0;
+let lastSquadUpdate = 0;
+let squadCombatMode = false;
+
+// GTA IV native Group-based Tactical Squad state.
+let squadGroup = 0;
+let squadSpacing = 2.0;
+let squadFormation = 0;
+let squadWeapon = 15; // M4
+let squadAccuracy = 72;
+let squadShootRate = 100;
+let squadHealth = 500;
+
+let squadInvincible = false;
+let squadHeadshotImmune = false;
+let squadUseCover = true;
+let squadDrivebys = true;
+let squadUseCarsCombat = true;
+let squadLeaveCarCombat = false;
+let squadMoveWhenInjured = true;
+let squadCoveringFire = true;
+let squadClearLosOnly = false;
+let squadSignalAfterKill = false;
+let squadDropsWeapons = false;
+let squadStayInCarWhenJacked = true;
+let squadCantBeDraggedOut = true;
+let squadCanBeKnockedOffBike = false;
+let squadDrunk = false;
+let squadBlindRage = false;
+
+const SQUAD_WEAPONS = [
+    { label: "UNARMED", id: 0 },
+    { label: "BASEBALL BAT", id: 1 },
+    { label: "POOL CUE", id: 2 },
+    { label: "KNIFE", id: 3 },
+    { label: "PISTOL", id: 7 },
+    { label: "DEAGLE", id: 9 },
+    { label: "SHOTGUN", id: 10 },
+    { label: "BARETTA", id: 11 },
+    { label: "MICRO UZI", id: 12 },
+    { label: "MP5", id: 13 },
+    { label: "AK47", id: 14 },
+    { label: "M4", id: 15 },
+    { label: "SNIPER RIFLE", id: 16 },
+    { label: "M40A1", id: 17 },
+    { label: "RPG", id: 18 },
+    { label: "FLAMETHROWER", id: 19 },
+    { label: "MINIGUN", id: 20 }
+];
+
+let aggressiveMode = 0; // 0 off, 1 fists, 2 armed
+let lastAggroPulse = 0;
+let aggroPeds = [];
+
+let trainsEnabled = true;
+let policeHelisEnabled = true;
+
+// Sleeper ECU calibration state: 0=off, 1=0.05, 2=0.15
+let sleeperEcuLevel = 0;
+
+
+// ------------------------------------------------------------
+// SANDBOX STATE
+// ------------------------------------------------------------
+let accessMode = false;
+let placedObjects = [];
+let activePlacedObject = 0;
+let objectOffset = { x: 0.0, y: -2.2, z: 0.7, rx: 0.0, ry: 0.0, rz: 0.0 };
+
+// ------------------------------------------------------------
+// V5.1 PLAYER / VEHICLE / WORLD LAB STATE
+// ------------------------------------------------------------
+let playerInvincible = false;
+let playerInvisible = false;
+let playerFrozen = false;
+let playerWindscreenEject = false;
+let everyoneIgnorePlayer = false;
+let savedPlayerPos = null;
+
+let carDamageEnabled = true;
+let carVisibleDamageEnabled = true;
+let carProofsEnabled = false;
+let carStrongEnabled = false;
+let carWatertightEnabled = false;
+let carInvisible = false;
+let carFrozen = false;
+
+let madDriversEnabled = false;
+
+// Known GTA IV object-model names used as safe starter cargo presets.
+// Each is validated with IS_MODEL_IN_CDIMAGE before creation.
+const CARGO_OBJECTS = [
+    { label: "CARDBOARD BOX", model: "sexcardboardbox12" },
+    { label: "BOX / PROP 09", model: "sexbox09" },
+    { label: "BOX / PROP 79", model: "sexbox79" },
+    { label: "BOX / PROP 80", model: "sexbox80" },
+    { label: "BOX / PROP 81", model: "sexbox81" },
+    { label: "BOX / PROP 82", model: "sexbox82" }
+];
+
+const MAX_VISIBLE = 9;
+
+// ------------------------------------------------------------
+// SAFE NATIVE WRAPPER
+// ------------------------------------------------------------
+function n(name, ...args) {
+    try {
+        return native(name, ...args);
+    } catch (e) {
+        log("Native failed:", name, e);
+        showTextBox("DYNAMIC TRAINER\nERROR: " + name);
+        return null;
+    }
+}
+
+function btnPressed(id) {
+    return !!n("IS_BUTTON_PRESSED", PAD, id);
+}
+
+function btnJust(id) {
+    return !!n("IS_BUTTON_JUST_PRESSED", PAD, id);
+}
+
+function playerId() {
+    return n("GET_PLAYER_ID");
+}
+
+function playerPed() {
+    const p = playerId();
+    if (p === null) return 0;
+    return n("GET_PLAYER_CHAR", p) || 0;
+}
+
+function playerPos() {
+    const ped = playerPed();
+    if (!ped) return null;
+    return n("GET_CHAR_COORDINATES", ped);
+}
+
+
+// ------------------------------------------------------------
+// MENU INPUT LOCK
+// While the trainer is open, GTA IV's own gameplay controls are
+// disabled. Raw IS_BUTTON_* reads remain available to CLEO so the
+// trainer can still read the Steam Deck controller.
+// ------------------------------------------------------------
+function lockPlayerControl() {
+    if (controlLocked) return;
+
+    const p = playerId();
+    if (p === null) return;
+
+    n("SET_PLAYER_CONTROL", p, false);
+    n("DISABLE_PAUSE_MENU", true);
+    controlLocked = true;
+}
+
+function unlockPlayerControl() {
+    if (!controlLocked) return;
+
+    const p = playerId();
+    if (p !== null) {
+        n("SET_PLAYER_CONTROL", p, true);
+    }
+
+    n("DISABLE_PAUSE_MENU", false);
+    controlLocked = false;
+}
+
+function notify(text) {
+    showTextBox("DYNAMIC TRAINER\n" + text);
+}
+
+// ------------------------------------------------------------
+// MODEL HELPERS
+// ------------------------------------------------------------
+function hash(name) {
+    return n("GET_HASH_KEY", name);
+}
+
+function loadModel(modelHash, timeoutMs = 4000) {
+    if (!modelHash) return false;
+
+    if (!n("IS_MODEL_IN_CDIMAGE", modelHash)) {
+        return false;
+    }
+
+    n("REQUEST_MODEL", modelHash);
+
+    let waited = 0;
+    while (!n("HAS_MODEL_LOADED", modelHash) && waited < timeoutMs) {
+        wait(50);
+        waited += 50;
+    }
+
+    return !!n("HAS_MODEL_LOADED", modelHash);
+}
+
+function releaseModel(modelHash) {
+    if (modelHash) n("MARK_MODEL_AS_NO_LONGER_NEEDED", modelHash);
+}
+
+// ------------------------------------------------------------
+// VEHICLE SPAWNER
+// ------------------------------------------------------------
+function spawnVehicle(modelName) {
+    const ped = playerPed();
+    const pos = playerPos();
+    if (!ped || !pos) {
+        notify("PLAYER NOT READY");
+        return;
+    }
+
+    const model = hash(modelName);
+    if (!model || !n("IS_MODEL_IN_CDIMAGE", model)) {
+        notify(modelName + "\nNOT AVAILABLE IN THIS EPISODE");
+        return;
+    }
+
+    if (!loadModel(model)) {
+        notify("FAILED TO LOAD " + modelName);
+        return;
+    }
+
+    const heading = n("GET_CHAR_HEADING", ped) || 0;
+    const r = heading * Math.PI / 180.0;
+
+    // Spawn a few metres in front and slightly to the side.
+    const sx = pos.x + Math.sin(r) * 5.0 + Math.cos(r) * 2.0;
+    const sy = pos.y + Math.cos(r) * 5.0 - Math.sin(r) * 2.0;
+    const sz = pos.z + 0.5;
+
+    const car = n("CREATE_CAR", model, sx, sy, sz);
+
+    if (car) {
+        n("SET_CAR_HEADING", car, heading);
+        notify(modelName + " SPAWNED");
+    } else {
+        notify("SPAWN FAILED: " + modelName);
+    }
+
+    releaseModel(model);
+}
+
+function currentCar() {
+    const ped = playerPed();
+    if (!ped || !n("IS_CHAR_IN_ANY_CAR", ped)) return 0;
+    return n("GET_CAR_CHAR_IS_USING", ped) || 0;
+}
+
+function fixCurrentCar() {
+    const car = currentCar();
+    if (!car) {
+        notify("GET IN A VEHICLE FIRST");
+        return;
+    }
+    n("FIX_CAR", car);
+    n("SET_CAR_HEALTH", car, 1000);
+    notify("VEHICLE REPAIRED");
+}
+
+function cleanCurrentCar() {
+    const car = currentCar();
+    if (!car) {
+        notify("GET IN A VEHICLE FIRST");
+        return;
+    }
+    n("WASH_VEHICLE_TEXTURES", car, 255);
+    notify("VEHICLE CLEANED");
+}
+
+// ------------------------------------------------------------
+// TIME
+// ------------------------------------------------------------
+function setHour(h) {
+    frozenHour = h;
+    n("SET_TIME_OF_DAY", h, 0);
+    notify("TIME SET: " + String(h).padStart(2, "0") + ":00");
+}
+
+function toggleFreezeTime() {
+    frozenTime = !frozenTime;
+    if (frozenTime) {
+        const t = n("GET_TIME_OF_DAY");
+        if (t && typeof t.hour !== "undefined") frozenHour = t.hour;
+        n("SET_TIME_OF_DAY", frozenHour, 0);
+    }
+    notify("FREEZE CLOCK: " + (frozenTime ? "ON" : "OFF"));
+}
+
+// ------------------------------------------------------------
+// BODYGUARD / RECRUIT
+// ------------------------------------------------------------
+function validGuard(ped) {
+    return ped && !!n("DOES_CHAR_EXIST", ped) && !n("IS_CHAR_DEAD", ped);
+}
+
+function pruneBodyguards() {
+    bodyguards = bodyguards.filter(validGuard);
+}
+
+function bodyguardCount() {
+    pruneBodyguards();
+    return bodyguards.length;
+}
+
+function squadGroupExists() {
+    return squadGroup && !!n("DOES_GROUP_EXIST", squadGroup);
+}
+
+function ensureSquadGroup() {
+    // Safer GTA IV route: use Niko's existing player group instead of creating
+    // a second group and trying to make the player its leader.
+    const p = playerId();
+    if (p === null) return false;
+
+    const group = n("GET_PLAYER_GROUP", p) || 0;
+    if (!group || !n("DOES_GROUP_EXIST", group)) {
+        squadGroup = 0;
+        return false;
+    }
+
+    squadGroup = group;
+    n("SET_GROUP_FORMATION", squadGroup, squadFormation);
+    n("SET_GROUP_FORMATION_SPACING", squadGroup, squadSpacing);
+    n("SET_GROUP_SEPARATION_RANGE", squadGroup, 80.0);
+    return true;
+}
+
+function forEachGuard(fn) {
+    pruneBodyguards();
+    for (const guard of bodyguards) {
+        if (validGuard(guard)) fn(guard);
+    }
+}
+
+function applyGuardLoadout(ped) {
+    n("REMOVE_ALL_CHAR_WEAPONS", ped);
+    if (squadWeapon !== 0) {
+        n("GIVE_WEAPON_TO_CHAR", ped, squadWeapon, 999, true);
+        n("SET_CURRENT_CHAR_WEAPON", ped, squadWeapon, true);
+    }
+}
+
+// Minimal spawn profile. Keep experimental AI flags OUT of the creation path.
+// The player can enable those later from the Tactical Squad menus.
+function applyGuardSpawnBaseline(ped) {
+    n("SET_CHAR_MAX_HEALTH", ped, squadHealth);
+    n("SET_CHAR_HEALTH", ped, squadHealth);
+    n("ADD_ARMOUR_TO_CHAR", ped, 100);
+    n("SET_CHAR_ACCURACY", ped, squadAccuracy);
+    n("SET_CHAR_WILL_USE_COVER", ped, squadUseCover);
+    n("SET_CHAR_WILL_DO_DRIVEBYS", ped, squadDrivebys);
+    n("SET_CHAR_WILL_USE_CARS_IN_COMBAT", ped, squadUseCarsCombat);
+    n("SET_BLOCKING_OF_NON_TEMPORARY_EVENTS", ped, true);
+    applyGuardLoadout(ped);
+}
+
+function applyGuardBehavior(ped) {
+    // Full profile is only applied when the user chooses profile/toggle actions.
+    n("SET_CHAR_MAX_HEALTH", ped, squadHealth);
+    n("SET_CHAR_HEALTH", ped, squadHealth);
+    n("ADD_ARMOUR_TO_CHAR", ped, 100);
+
+    n("SET_CHAR_ACCURACY", ped, squadAccuracy);
+    n("SET_CHAR_SHOOT_RATE", ped, squadShootRate);
+
+    n("SET_CHAR_WILL_USE_COVER", ped, squadUseCover);
+    n("SET_CHAR_PROVIDE_COVERING_FIRE", ped, squadCoveringFire);
+    n("SET_CHAR_WILL_ONLY_FIRE_WITH_CLEAR_LOS", ped, squadClearLosOnly);
+
+    n("SET_CHAR_WILL_DO_DRIVEBYS", ped, squadDrivebys);
+    n("SET_CHAR_WILL_USE_CARS_IN_COMBAT", ped, squadUseCarsCombat);
+    n("SET_CHAR_WILL_LEAVE_CAR_IN_COMBAT", ped, squadLeaveCarCombat);
+    n("SET_CHAR_WILL_MOVE_WHEN_INJURED", ped, squadMoveWhenInjured);
+
+    n("SET_CHAR_SIGNAL_AFTER_KILL", ped, squadSignalAfterKill);
+    n("SET_CHAR_DROPS_WEAPONS_WHEN_DEAD", ped, squadDropsWeapons);
+
+    n("SET_CHAR_INVINCIBLE", ped, squadInvincible);
+    n("SET_CHAR_SUFFERS_CRITICAL_HITS", ped, !squadHeadshotImmune);
+
+    n("SET_CHAR_STAY_IN_CAR_WHEN_JACKED", ped, squadStayInCarWhenJacked);
+    n("SET_CHAR_CANT_BE_DRAGGED_OUT", ped, squadCantBeDraggedOut);
+    n("SET_CHAR_CAN_BE_KNOCKED_OFF_BIKE", ped, squadCanBeKnockedOffBike);
+
+    n("SET_PED_IS_DRUNK", ped, squadDrunk);
+    n("SET_PED_IS_BLIND_RAGING", ped, squadBlindRage);
+
+    n("SET_CHAR_NEVER_LEAVES_GROUP", ped, false);
+    n("SET_BLOCKING_OF_NON_TEMPORARY_EVENTS", ped, true);
+
+    applyGuardLoadout(ped);
+}
+
+function configureBodyguard(ped) {
+    n("SET_CHAR_RANDOM_COMPONENT_VARIATION", ped);
+    applyGuardSpawnBaseline(ped);
+
+    if (ensureSquadGroup()) {
+        n("SET_GROUP_MEMBER", squadGroup, ped);
+        return true;
+    }
+    return false;
+}
+
+function spawnOneBodyguard(slotIndex) {
+    if (bodyguardCount() >= MAX_BODYGUARDS) return false;
+
+    const me = playerPed();
+    const pos = playerPos();
+    if (!me || !pos) return false;
+
+    if (!bodyguardModel) {
+        bodyguardModel = hash("M_Y_GAFR_LO_01");
+    }
+
+    if (!loadModel(bodyguardModel)) {
+        notify("BODYGUARD MODEL FAILED");
+        return false;
+    }
+
+    const angle = (slotIndex / MAX_BODYGUARDS) * Math.PI * 2.0;
+    const radius = 2.5 + (slotIndex % 2) * 1.0;
+    const x = pos.x + Math.cos(angle) * radius;
+    const y = pos.y + Math.sin(angle) * radius;
+
+    const guard = n("CREATE_CHAR", 1, bodyguardModel, x, y, pos.z);
+    if (!guard || !n("DOES_CHAR_EXIST", guard)) {
+        notify("BODYGUARD CREATE FAILED");
+        return false;
+    }
+
+    bodyguards.push(guard);
+    const grouped = configureBodyguard(guard);
+
+    // Fallback manual follow only if the player's GTA IV group was unavailable.
+    if (!grouped) {
+        const side = ((bodyguards.length % 3) - 1) * 1.2;
+        const back = -1.5 - Math.floor(bodyguards.length / 3) * 0.7;
+        n("TASK_GOTO_CHAR_OFFSET", guard, me, -1, side, back);
+    }
+
+    return true;
+}
+
+function recruitBodyguards(amount) {
+    pruneBodyguards();
+
+    let wanted = Math.min(amount, MAX_BODYGUARDS - bodyguards.length);
+    if (wanted <= 0) {
+        notify("SQUAD FULL: 10/10");
+        return;
+    }
+
+    let added = 0;
+    for (let i = 0; i < wanted; i++) {
+        if (spawnOneBodyguard(bodyguards.length + i)) added++;
+        wait(40);
+    }
+
+    releaseModel(bodyguardModel);
+    notify("SQUAD: " + bodyguardCount() + "/10");
+}
+
+function healBodyguards() {
+    pruneBodyguards();
+    if (!bodyguards.length) {
+        notify("NO ACTIVE BODYGUARDS");
+        return;
+    }
+
+    for (const guard of bodyguards) {
+        n("SET_CHAR_HEALTH", guard, 500);
+        n("ADD_ARMOUR_TO_CHAR", guard, 100);
+    }
+
+    notify("SQUAD HEALED");
+}
+
+function squadEnterCar() {
+    pruneBodyguards();
+    if (!bodyguards.length) {
+        notify("NO ACTIVE BODYGUARDS");
+        return;
+    }
+
+    const car = currentCar();
+    if (!car) {
+        notify("GET IN A VEHICLE FIRST");
+        return;
+    }
+
+    let maxPassengers = n("GET_MAXIMUM_NUMBER_OF_PASSENGERS", car);
+    if (maxPassengers === null || typeof maxPassengers !== "number") {
+        maxPassengers = 3;
+    }
+
+    let guardIndex = 0;
+
+    for (let seat = 0; seat < maxPassengers && guardIndex < bodyguards.length; seat++) {
+        const free = n("IS_CAR_PASSENGER_SEAT_FREE", car, seat);
+        if (free) {
+            const guard = bodyguards[guardIndex++];
+            n("SET_CHAR_WILL_DO_DRIVEBYS", guard, true);
+            n("SET_CHAR_WILL_USE_CARS_IN_COMBAT", guard, true);
+            n("TASK_ENTER_CAR_AS_PASSENGER", guard, car, 12000, seat);
+        }
+    }
+
+    notify("SQUAD BOARDING: " + guardIndex);
+}
+
+function squadCombatNearby() {
+    pruneBodyguards();
+    if (!bodyguards.length) {
+        notify("NO ACTIVE BODYGUARDS");
+        return;
+    }
+
+    squadCombatMode = true;
+
+    for (const guard of bodyguards) {
+        n("SET_CHAR_WILL_DO_DRIVEBYS", guard, true);
+        n("TASK_COMBAT_HATED_TARGETS_AROUND_CHAR", guard, 100.0);
+    }
+
+    notify("SQUAD COMBAT: ON");
+}
+
+function squadStandDown() {
+    pruneBodyguards();
+    squadCombatMode = false;
+
+    const me = playerPed();
+    let idx = 0;
+
+    for (const guard of bodyguards) {
+        n("CLEAR_CHAR_TASKS", guard);
+        if (me) {
+            const side = ((idx % 3) - 1) * 1.2;
+            const back = -1.5 - Math.floor(idx / 3) * 0.7;
+            n("TASK_GOTO_CHAR_OFFSET", guard, me, -1, side, back);
+        }
+        idx++;
+    }
+
+    notify("SQUAD COMBAT: OFF");
+}
+
+function dismissBodyguards() {
+    pruneBodyguards();
+
+    for (const guard of bodyguards) {
+        n("REMOVE_CHAR_FROM_GROUP", guard);
+        n("CLEAR_CHAR_TASKS", guard);
+        n("TASK_WANDER_STANDARD", guard);
+        n("MARK_CHAR_AS_NO_LONGER_NEEDED", guard);
+    }
+
+    bodyguards = [];
+    squadCombatMode = false;
+
+    // Never REMOVE_GROUP here: squadGroup is Niko's own player group in v5.1.
+    squadGroup = 0;
+
+    notify("TACTICAL SQUAD DISMISSED");
+}
+
+function updateBodyguardSquad() {
+    const now = Date.now();
+    if (now - lastSquadUpdate < 1400) return;
+    lastSquadUpdate = now;
+
+    pruneBodyguards();
+    if (!bodyguards.length) return;
+
+    if (!squadGroupExists()) {
+        squadGroup = 0;
+        if (ensureSquadGroup()) {
+            forEachGuard(g => n("SET_GROUP_MEMBER", squadGroup, g));
+        }
+    }
+
+    forEachGuard(guard => {
+        n("SET_CHAR_WILL_DO_DRIVEBYS", guard, squadDrivebys);
+        n("SET_CHAR_WILL_USE_CARS_IN_COMBAT", guard, squadUseCarsCombat);
+
+        if (squadCombatMode) {
+            n("TASK_COMBAT_HATED_TARGETS_AROUND_CHAR", guard, 100.0);
+        }
+    });
+}
+
+
+// ------------------------------------------------------------
+// TACTICAL SQUAD CONTROL
+// ------------------------------------------------------------
+function setSquadWeapon(id, label) {
+    squadWeapon = id;
+    forEachGuard(applyGuardLoadout);
+    notify("SQUAD WEAPON: " + label);
+}
+
+function setSquadAccuracy(value) {
+    squadAccuracy = value;
+    forEachGuard(g => n("SET_CHAR_ACCURACY", g, value));
+    notify("SQUAD ACCURACY: " + value);
+}
+
+function setSquadShootRate(value) {
+    squadShootRate = value;
+    forEachGuard(g => n("SET_CHAR_SHOOT_RATE", g, value));
+    notify("SQUAD SHOOT RATE: " + value);
+}
+
+function setSquadHealth(value) {
+    squadHealth = value;
+    forEachGuard(g => {
+        n("SET_CHAR_MAX_HEALTH", g, value);
+        n("SET_CHAR_HEALTH", g, value);
+    });
+    notify("SQUAD HEALTH: " + value);
+}
+
+function setSquadSpacing(value) {
+    squadSpacing = value;
+    if (ensureSquadGroup()) n("SET_GROUP_FORMATION_SPACING", squadGroup, value);
+    notify("FORMATION SPACING: " + value + "m");
+}
+
+function setSquadFormation(value) {
+    squadFormation = value;
+    if (ensureSquadGroup()) n("SET_GROUP_FORMATION", squadGroup, value);
+    notify("FORMATION ID: " + value);
+}
+
+function toggleSquadFlag(key, nativeName, label, nativeValueFn = v => v) {
+    const next = !globalThis[key];
+    globalThis[key] = next;
+    forEachGuard(g => n(nativeName, g, nativeValueFn(next)));
+    notify(label + ": " + (next ? "ON" : "OFF"));
+}
+
+// Explicit toggles avoid depending on reflective global assignment in CLEO's JS host.
+function toggleInvincible() {
+    squadInvincible = !squadInvincible;
+    forEachGuard(g => n("SET_CHAR_INVINCIBLE", g, squadInvincible));
+    notify("INVINCIBLE: " + (squadInvincible ? "ON" : "OFF"));
+}
+function toggleHeadshotImmune() {
+    squadHeadshotImmune = !squadHeadshotImmune;
+    forEachGuard(g => n("SET_CHAR_SUFFERS_CRITICAL_HITS", g, !squadHeadshotImmune));
+    notify("HEADSHOT IMMUNE: " + (squadHeadshotImmune ? "ON" : "OFF"));
+}
+function toggleUseCover() {
+    squadUseCover = !squadUseCover;
+    forEachGuard(g => n("SET_CHAR_WILL_USE_COVER", g, squadUseCover));
+    notify("USE COVER: " + (squadUseCover ? "ON" : "OFF"));
+}
+function toggleCoveringFire() {
+    squadCoveringFire = !squadCoveringFire;
+    forEachGuard(g => n("SET_CHAR_PROVIDE_COVERING_FIRE", g, squadCoveringFire));
+    notify("COVERING FIRE: " + (squadCoveringFire ? "ON" : "OFF"));
+}
+function toggleClearLos() {
+    squadClearLosOnly = !squadClearLosOnly;
+    forEachGuard(g => n("SET_CHAR_WILL_ONLY_FIRE_WITH_CLEAR_LOS", g, squadClearLosOnly));
+    notify("CLEAR LOS ONLY: " + (squadClearLosOnly ? "ON" : "OFF"));
+}
+function toggleDrivebys() {
+    squadDrivebys = !squadDrivebys;
+    forEachGuard(g => n("SET_CHAR_WILL_DO_DRIVEBYS", g, squadDrivebys));
+    notify("DRIVE-BYS: " + (squadDrivebys ? "ON" : "OFF"));
+}
+function toggleCarsCombat() {
+    squadUseCarsCombat = !squadUseCarsCombat;
+    forEachGuard(g => n("SET_CHAR_WILL_USE_CARS_IN_COMBAT", g, squadUseCarsCombat));
+    notify("USE CARS IN COMBAT: " + (squadUseCarsCombat ? "ON" : "OFF"));
+}
+function toggleLeaveCarCombat() {
+    squadLeaveCarCombat = !squadLeaveCarCombat;
+    forEachGuard(g => n("SET_CHAR_WILL_LEAVE_CAR_IN_COMBAT", g, squadLeaveCarCombat));
+    notify("LEAVE CAR IN COMBAT: " + (squadLeaveCarCombat ? "ON" : "OFF"));
+}
+function toggleMoveInjured() {
+    squadMoveWhenInjured = !squadMoveWhenInjured;
+    forEachGuard(g => n("SET_CHAR_WILL_MOVE_WHEN_INJURED", g, squadMoveWhenInjured));
+    notify("MOVE WHEN INJURED: " + (squadMoveWhenInjured ? "ON" : "OFF"));
+}
+function toggleSignalKill() {
+    squadSignalAfterKill = !squadSignalAfterKill;
+    forEachGuard(g => n("SET_CHAR_SIGNAL_AFTER_KILL", g, squadSignalAfterKill));
+    notify("SIGNAL AFTER KILL: " + (squadSignalAfterKill ? "ON" : "OFF"));
+}
+function toggleDropsWeapons() {
+    squadDropsWeapons = !squadDropsWeapons;
+    forEachGuard(g => n("SET_CHAR_DROPS_WEAPONS_WHEN_DEAD", g, squadDropsWeapons));
+    notify("DROP WEAPONS ON DEATH: " + (squadDropsWeapons ? "ON" : "OFF"));
+}
+function toggleStayCarJacked() {
+    squadStayInCarWhenJacked = !squadStayInCarWhenJacked;
+    forEachGuard(g => n("SET_CHAR_STAY_IN_CAR_WHEN_JACKED", g, squadStayInCarWhenJacked));
+    notify("STAY IN CAR WHEN JACKED: " + (squadStayInCarWhenJacked ? "ON" : "OFF"));
+}
+function toggleCantDragged() {
+    squadCantBeDraggedOut = !squadCantBeDraggedOut;
+    forEachGuard(g => n("SET_CHAR_CANT_BE_DRAGGED_OUT", g, squadCantBeDraggedOut));
+    notify("CANT BE DRAGGED OUT: " + (squadCantBeDraggedOut ? "ON" : "OFF"));
+}
+function toggleBikeKnockoff() {
+    squadCanBeKnockedOffBike = !squadCanBeKnockedOffBike;
+    forEachGuard(g => n("SET_CHAR_CAN_BE_KNOCKED_OFF_BIKE", g, squadCanBeKnockedOffBike));
+    notify("CAN BE KNOCKED OFF BIKE: " + (squadCanBeKnockedOffBike ? "ON" : "OFF"));
+}
+function toggleDrunk() {
+    squadDrunk = !squadDrunk;
+    forEachGuard(g => n("SET_PED_IS_DRUNK", g, squadDrunk));
+    notify("DRUNK AI: " + (squadDrunk ? "ON" : "OFF"));
+}
+function toggleBlindRage() {
+    squadBlindRage = !squadBlindRage;
+    forEachGuard(g => n("SET_PED_IS_BLIND_RAGING", g, squadBlindRage));
+    notify("BLIND RAGE: " + (squadBlindRage ? "ON" : "OFF"));
+}
+
+function squadHoldPosition() {
+    pruneBodyguards();
+    squadCombatMode = false;
+    forEachGuard(g => n("TASK_STAND_STILL", g, 600000));
+    notify("SQUAD HOLDING POSITION");
+}
+
+function squadGuardPosition() {
+    pruneBodyguards();
+    squadCombatMode = false;
+    // Unknown middle parameters are kept conservative at 0.0.
+    forEachGuard(g => n("TASK_GUARD_CURRENT_POSITION", g, 0.0, 0.0, 600000));
+    notify("SQUAD GUARDING CURRENT POSITION");
+}
+
+function squadRegroup() {
+    pruneBodyguards();
+    squadCombatMode = false;
+
+    if (ensureSquadGroup()) {
+        forEachGuard(g => {
+            n("CLEAR_CHAR_TASKS", g);
+            n("SET_GROUP_MEMBER", squadGroup, g);
+        });
+        n("SET_GROUP_FORMATION", squadGroup, squadFormation);
+        n("SET_GROUP_FORMATION_SPACING", squadGroup, squadSpacing);
+        n("SET_GROUP_SEPARATION_RANGE", squadGroup, 80.0);
+    } else {
+        const me = playerPed();
+        let idx = 0;
+        forEachGuard(g => {
+            n("CLEAR_CHAR_TASKS", g);
+            const side = ((idx % 3) - 1) * 1.2;
+            const back = -1.5 - Math.floor(idx / 3) * 0.7;
+            n("TASK_GOTO_CHAR_OFFSET", g, me, -1, side, back);
+            idx++;
+        });
+    }
+    notify("SQUAD REGROUP");
+}
+
+function reapplySquadProfile() {
+    forEachGuard(applyGuardBehavior);
+    notify("SQUAD PROFILE REAPPLIED");
+}
+
+function presetRifleTeam() {
+    squadWeapon = 15;
+    squadAccuracy = 72;
+    squadShootRate = 100;
+    squadUseCover = true;
+    squadCoveringFire = true;
+    squadClearLosOnly = false;
+    squadInvincible = false;
+    squadHeadshotImmune = false;
+    forEachGuard(applyGuardBehavior);
+    notify("ROLE PRESET: RIFLE TEAM");
+}
+
+function presetTankTeam() {
+    squadWeapon = 15;
+    squadHealth = 1200;
+    squadAccuracy = 65;
+    squadInvincible = false;
+    squadHeadshotImmune = true;
+    squadUseCover = true;
+    forEachGuard(applyGuardBehavior);
+    notify("ROLE PRESET: TANK TEAM");
+}
+
+function presetDrivebyCrew() {
+    squadWeapon = 13;
+    squadAccuracy = 68;
+    squadDrivebys = true;
+    squadUseCarsCombat = true;
+    squadLeaveCarCombat = false;
+    squadStayInCarWhenJacked = true;
+    squadCantBeDraggedOut = true;
+    forEachGuard(applyGuardBehavior);
+    notify("ROLE PRESET: DRIVE-BY CREW");
+}
+
+function presetChaosCrew() {
+    squadWeapon = 20;
+    squadAccuracy = 45;
+    squadShootRate = 130;
+    squadUseCover = false;
+    squadBlindRage = true;
+    squadInvincible = false;
+    forEachGuard(applyGuardBehavior);
+    notify("ROLE PRESET: CHAOS CREW");
+}
+
+
+// ------------------------------------------------------------
+// AGGRESSIVE PEDS
+// This deliberately changes individual nearby ambient peds rather than
+// permanently rewriting the whole relationship table.
+// ------------------------------------------------------------
+function isTrackedAggro(ped) {
+    for (let i = 0; i < aggroPeds.length; i++) {
+        if (aggroPeds[i] === ped) return true;
+    }
+    return false;
+}
+
+function clearAggroPeds() {
+    for (let i = 0; i < aggroPeds.length; i++) {
+        const ped = aggroPeds[i];
+        if (ped && n("DOES_CHAR_EXIST", ped)) {
+            n("CLEAR_CHAR_TASKS", ped);
+            n("TASK_WANDER_STANDARD", ped);
+            n("MARK_CHAR_AS_NO_LONGER_NEEDED", ped);
+        }
+    }
+    aggroPeds = [];
+}
+
+function setAggressiveMode(mode) {
+    aggressiveMode = mode;
+    if (mode === 0) clearAggroPeds();
+    notify(
+        mode === 0 ? "AGGRESSIVE PEDS: OFF" :
+        mode === 1 ? "AGGRESSIVE PEDS: FISTS" :
+                     "AGGRESSIVE PEDS: ARMED"
+    );
+}
+
+function pulseAggressivePeds() {
+    if (!aggressiveMode) return;
+
+    const me = playerPed();
+    const pos = playerPos();
+    if (!me || !pos) return;
+
+    const ped = n(
+        "GET_RANDOM_CHAR_IN_AREA_OFFSET_NO_SAVE",
+        pos.x - 35.0, pos.y - 35.0, pos.z - 8.0,
+        70.0, 70.0, 16.0
+    );
+
+    if (!ped || ped === me || bodyguards.includes(ped)) return;
+    if (!n("DOES_CHAR_EXIST", ped) || n("IS_CHAR_DEAD", ped)) return;
+    if (isTrackedAggro(ped)) return;
+
+    n("SET_CHAR_AS_MISSION_CHAR", ped);
+
+    if (aggressiveMode === 2) {
+        const weapons = [7, 10, 12, 14]; // pistol, shotgun, Micro Uzi, AK47
+        const w = weapons[Math.floor(Math.random() * weapons.length)];
+        n("GIVE_WEAPON_TO_CHAR", ped, w, 250, true);
+        n("SET_CHAR_ACCURACY", ped, 35 + Math.floor(Math.random() * 35));
+    }
+
+    n("TASK_COMBAT", ped, me);
+    aggroPeds.push(ped);
+
+    // Keep the script from owning too many ambient peds.
+    if (aggroPeds.length > 8) {
+        const oldPed = aggroPeds.shift();
+        if (oldPed && n("DOES_CHAR_EXIST", oldPed)) {
+            n("MARK_CHAR_AS_NO_LONGER_NEEDED", oldPed);
+        }
+    }
+}
+
+function imguiDiagnostic() {
+    notify("IMGUIREDUX ACTIVE\nDYNAMIC LIBERTY V5");
+}
+
+
+// ------------------------------------------------------------
+// WORLD / POLICE / WOW MODES
+// ------------------------------------------------------------
+function trafficDensity(value, label) {
+    n("SET_CAR_DENSITY_MULTIPLIER", value);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", value);
+    notify("TRAFFIC: " + label);
+}
+
+function pedDensity(value, label) {
+    n("SET_PED_DENSITY_MULTIPLIER", value);
+    notify("PEDESTRIANS: " + label);
+}
+
+function setGameSpeed(value, label) {
+    n("SET_TIME_SCALE", value);
+    notify("WORLD SPEED: " + label);
+}
+
+function setWanted(level) {
+    const p = playerId();
+    n("ALTER_WANTED_LEVEL", p, level);
+    n("APPLY_WANTED_LEVEL_CHANGE_NOW", p);
+    notify("WANTED LEVEL: " + level);
+}
+
+function toggleTrains() {
+    trainsEnabled = !trainsEnabled;
+    n("SWITCH_RANDOM_TRAINS", trainsEnabled);
+    notify("TRAINS: " + (trainsEnabled ? "ON" : "OFF"));
+}
+
+function togglePoliceHelis() {
+    policeHelisEnabled = !policeHelisEnabled;
+    n("SWITCH_POLICE_HELIS", policeHelisEnabled);
+    notify("POLICE HELIS: " + (policeHelisEnabled ? "ON" : "OFF"));
+}
+
+// A hidden-feeling "movie city" preset: more life, normal game speed.
+function movieCity() {
+    n("SET_CAR_DENSITY_MULTIPLIER", 1.75);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 1.75);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.6);
+    n("SWITCH_RANDOM_TRAINS", true);
+    n("SET_TIME_SCALE", 1.0);
+    notify("MOVIE CITY MODE");
+}
+
+// Empty streets without deleting anything already spawned.
+function ghostCity() {
+    n("SET_CAR_DENSITY_MULTIPLIER", 0.0);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 0.0);
+    n("SET_PED_DENSITY_MULTIPLIER", 0.0);
+    notify("GHOST CITY MODE");
+}
+
+// "Purge hour": midnight, lots of people, fewer cars, armed hostility.
+function purgeHour() {
+    frozenHour = 0;
+    n("SET_TIME_OF_DAY", 0, 0);
+    n("SET_CAR_DENSITY_MULTIPLIER", 0.45);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 0.45);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.8);
+    setAggressiveMode(2);
+    notify("PURGE HOUR ENABLED");
+}
+
+function nightSiege() {
+    const p = playerId();
+    frozenHour = 2;
+    n("SET_TIME_OF_DAY", 2, 0);
+    n("SET_CAR_DENSITY_MULTIPLIER", 0.75);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 0.75);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.6);
+    n("SWITCH_POLICE_HELIS", true);
+    policeHelisEnabled = true;
+    setAggressiveMode(2);
+    n("ALTER_WANTED_LEVEL", p, 4);
+    n("APPLY_WANTED_LEVEL_CHANGE_NOW", p);
+    notify("NIGHT SIEGE");
+}
+
+function fightClubCity() {
+    const p = playerId();
+    n("ALTER_WANTED_LEVEL", p, 0);
+    n("APPLY_WANTED_LEVEL_CHANGE_NOW", p);
+    n("SET_CAR_DENSITY_MULTIPLIER", 0.35);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 0.35);
+    n("SET_PED_DENSITY_MULTIPLIER", 2.0);
+    setAggressiveMode(1);
+    notify("FIGHT CLUB CITY");
+}
+
+function rushHourHell() {
+    n("SET_TIME_OF_DAY", 17, 0);
+    n("SET_CAR_DENSITY_MULTIPLIER", 2.35);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 2.35);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.35);
+    n("SET_TIME_SCALE", 1.0);
+    notify("RUSH HOUR HELL");
+}
+
+function slowMoMayhem() {
+    n("SET_TIME_SCALE", 0.35);
+    n("SET_CAR_DENSITY_MULTIPLIER", 1.25);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 1.25);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.5);
+    setAggressiveMode(2);
+    notify("SLOW-MO MAYHEM");
+}
+
+function manhuntMode() {
+    const p = playerId();
+    setAggressiveMode(0);
+    n("SET_TIME_SCALE", 1.0);
+    n("SET_CAR_DENSITY_MULTIPLIER", 0.85);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 0.85);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.0);
+    n("SWITCH_POLICE_HELIS", true);
+    policeHelisEnabled = true;
+    n("ALTER_WANTED_LEVEL", p, 6);
+    n("APPLY_WANTED_LEVEL_CHANGE_NOW", p);
+    notify("MANHUNT");
+}
+
+function normalWorld() {
+    const p = playerId();
+    accessMode = false;
+    n("DONT_DISPATCH_COPS_FOR_PLAYER", p, false);
+    n("SET_POLICE_IGNORE_PLAYER", p, false);
+    n("SET_EVERYONE_IGNORE_PLAYER", p, false);
+    n("SET_CAR_DENSITY_MULTIPLIER", 1.0);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 1.0);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.0);
+    n("SET_TIME_SCALE", 1.0);
+    n("SWITCH_RANDOM_TRAINS", true);
+    n("SWITCH_POLICE_HELIS", true);
+    trainsEnabled = true;
+    policeHelisEnabled = true;
+    setAggressiveMode(0);
+    notify("WORLD RESET TO NORMAL");
+}
+
+
+// ------------------------------------------------------------
+// MONEY / ACCESS / OBJECT SANDBOX
+// ------------------------------------------------------------
+function dropMoney(amount) {
+    const pos = playerPos();
+    if (!pos) {
+        notify("PLAYER NOT READY");
+        return;
+    }
+
+    const ped = playerPed();
+    const heading = ped ? (n("GET_CHAR_HEADING", ped) || 0) : 0;
+    const r = heading * Math.PI / 180.0;
+    const x = pos.x + Math.sin(r) * 1.6;
+    const y = pos.y + Math.cos(r) * 1.6;
+    const z = pos.z + 0.15;
+
+    n("CREATE_MONEY_PICKUP", x, y, z, amount, true);
+    notify("DROPPED $" + amount);
+}
+
+function moneyScatter(count = 12, each = 5000) {
+    const pos = playerPos();
+    if (!pos) return;
+
+    for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2.0;
+        const d = 1.5 + Math.random() * 5.0;
+        const x = pos.x + Math.cos(a) * d;
+        const y = pos.y + Math.sin(a) * d;
+        const z = pos.z + 0.25;
+        n("CREATE_MONEY_PICKUP", x, y, z, each, true);
+        wait(25);
+    }
+
+    notify("MONEY SCATTER: $" + (count * each));
+}
+
+// This is deliberately called "Access Mode", not a fake story-unlock.
+// It suppresses the police response so you can travel to restricted
+// islands without the normal bridge-crossing wanted response.
+function toggleAccessMode() {
+    accessMode = !accessMode;
+    const p = playerId();
+
+    n("SET_POLICE_IGNORE_PLAYER", p, accessMode);
+    n("DONT_DISPATCH_COPS_FOR_PLAYER", p, accessMode);
+
+    if (accessMode) {
+        n("ALTER_WANTED_LEVEL", p, 0);
+        n("APPLY_WANTED_LEVEL_CHANGE_NOW", p);
+    }
+
+    notify("ISLAND ACCESS MODE: " + (accessMode ? "ON" : "OFF"));
+}
+
+function spawnPlaceableObject(modelName) {
+    const pos = playerPos();
+    if (!pos) return;
+
+    const model = hash(modelName);
+    if (!model || !n("IS_MODEL_IN_CDIMAGE", model)) {
+        notify("OBJECT NOT AVAILABLE");
+        return;
+    }
+
+    if (!loadModel(model)) {
+        notify("OBJECT LOAD FAILED");
+        return;
+    }
+
+    const obj = n("CREATE_OBJECT", model, pos.x, pos.y, pos.z + 0.5);
+    if (!obj) {
+        notify("OBJECT CREATE FAILED");
+        releaseModel(model);
+        return;
+    }
+
+    n("SET_OBJECT_COORDINATES", obj, pos.x, pos.y, pos.z + 0.5);
+    activePlacedObject = obj;
+    placedObjects.push(obj);
+    releaseModel(model);
+
+    notify("OBJECT SPAWNED");
+}
+
+function objectExists(obj) {
+    return obj && !!n("DOES_OBJECT_EXIST", obj);
+}
+
+function attachActiveObjectToVehicle() {
+    if (!objectExists(activePlacedObject)) {
+        notify("SPAWN AN OBJECT FIRST");
+        return;
+    }
+
+    const car = currentCar();
+    if (!car) {
+        notify("GET IN VEHICLE FIRST");
+        return;
+    }
+
+    n(
+        "ATTACH_OBJECT_TO_CAR",
+        activePlacedObject,
+        car,
+        0,
+        objectOffset.x,
+        objectOffset.y,
+        objectOffset.z,
+        objectOffset.rx,
+        objectOffset.ry,
+        objectOffset.rz
+    );
+
+    notify("OBJECT ATTACHED");
+}
+
+function detachActiveObject() {
+    if (!objectExists(activePlacedObject)) {
+        notify("NO ACTIVE OBJECT");
+        return;
+    }
+
+    n("DETACH_OBJECT", activePlacedObject, true);
+    notify("OBJECT DETACHED");
+}
+
+function deleteActiveObject() {
+    if (!objectExists(activePlacedObject)) {
+        activePlacedObject = 0;
+        notify("NO ACTIVE OBJECT");
+        return;
+    }
+
+    n("DELETE_OBJECT", activePlacedObject);
+    placedObjects = placedObjects.filter(o => o !== activePlacedObject);
+    activePlacedObject = 0;
+    notify("OBJECT DELETED");
+}
+
+function clearPlacedObjects() {
+    for (const obj of placedObjects) {
+        if (objectExists(obj)) n("DELETE_OBJECT", obj);
+    }
+    placedObjects = [];
+    activePlacedObject = 0;
+    notify("PLACED OBJECTS CLEARED");
+}
+
+function changeObjectOffset(axis, delta) {
+    objectOffset[axis] += delta;
+
+    const v = Math.round(objectOffset[axis] * 100) / 100;
+    notify(axis.toUpperCase() + " = " + v);
+}
+
+function resetObjectOffset() {
+    objectOffset = { x: 0.0, y: -2.2, z: 0.7, rx: 0.0, ry: 0.0, rz: 0.0 };
+    notify("OBJECT OFFSET RESET");
+}
+
+// ------------------------------------------------------------
+// SLEEPER ECU MAP — HARDWARE CALIBRATION
+// ------------------------------------------------------------
+function setSleeperEcuLevel(level) {
+    sleeperEcuLevel = level;
+
+    if (level === 0) notify("SLEEPER ECU: OFF");
+    else if (level === 1) notify("SLEEPER ECU: TEST 0.05");
+    else notify("SLEEPER ECU: TEST 0.15");
+}
+
+function applySleeperEcuMap() {
+    if (sleeperEcuLevel === 0) return;
+
+    const ped = playerPed();
+    if (!ped) return;
+    if (!n("IS_CHAR_IN_ANY_CAR", ped)) return;
+
+    const car = currentCar();
+    if (!car) return;
+
+    const driver = n("GET_DRIVER_OF_CAR", car);
+    if (driver !== ped) return;
+
+    // GTA IV control ID 40 = vehicle accelerate.
+    if (!n("IS_CONTROL_PRESSED", 0, 40)) return;
+
+    // GTA IV: forward gear returns 1..5; reverse returns false.
+    const gear = n("GET_VEHICLE_GEAR", car);
+    if (gear === false || typeof gear !== "number" || gear < 1) return;
+
+    const speed = n("GET_CAR_SPEED", car);
+    if (typeof speed !== "number") return;
+
+    // Extra force fades to zero at ~35 m/s (~78 mph).
+    const falloff = Math.max(0.0, 1.0 - (speed / 35.0));
+    if (falloff <= 0.0) return;
+
+    const baseForce = (sleeperEcuLevel === 1) ? 0.05 : 0.15;
+    const pushY = baseForce * falloff;
+
+    // GTA IV 12-parameter APPLY_FORCE_TO_CAR.
+    // Secondary vectors are zero so the disputed middle-vector semantics
+    // cannot add spin or offset effects in this calibration build.
+    n(
+        "APPLY_FORCE_TO_CAR",
+        car,
+        true,
+        0.0, pushY, 0.0,
+        0.0, 0.0, 0.0,
+        true,
+        true,
+        true,
+        true
+    );
+}
+
+// ------------------------------------------------------------
+// BASE GTA IV VEHICLE LISTS
+// Runtime validation with IS_MODEL_IN_CDIMAGE keeps unavailable names
+// from crashing the trainer.
+// ------------------------------------------------------------
+const VEHICLES = {
+    "Sports & Super": [
+        "BANSHEE","COMET","COQUETTE","FELTZER","INFERNUS",
+        "SULTANRS","SUPERGT","TURISMO"
+    ],
+    "Muscle & Classics": [
+        "BUCCANEER","DUKES","FACTION","FORTUNE","MANANA","PEYOTE",
+        "SABRE","SABRE2","SABREGT","STALION","VIGERO","VIGERO2",
+        "VIRGO","VOODOO"
+    ],
+    "Sedans": [
+        "ADMIRAL","CHAVOS","COGNOSCENTI","DF8","DILETTANTE","EMPEROR",
+        "ESPERANTO","FEROCI","FUTO","HAKUMAI","INTRUDER","LOKUS",
+        "MARBELLA","MERIT","ORACLE","PINNACLE","PMP600","PREMIER",
+        "PRIMO","SCHAFTER","SENTINEL","SOLAIR","STRATUM","SULTAN",
+        "VINCENT","WASHINGTON","WILLARD"
+    ],
+    "SUVs & Vans": [
+        "BLISTA","CAVALCADE","HABANERO","HUNTLEY","LANDSTALKER",
+        "MINIVAN","MOONBEAM","PATRIOT","PERENNIAL","RANCHER","REBLA",
+        "BURRITO","PONY","SPEEDO"
+    ],
+    "Trucks & Utility": [
+        "BENSON","BIFF","BOBCAT","BOXVILLE","CONTENDER","FLATBED",
+        "PACKER","PHANTOM","RIPLEY","STEED","STOCKADE","TRASH","YANKEE",
+        "AIRTUG","MRTASTY"
+    ],
+    "Taxis & Service": [
+        "BUS","CABBY","TAXI","TAXI2","STRETCH","ROMERO"
+    ],
+    "Emergency": [
+        "AMBULANCE","FIRETRUK","NOOSE","POLICE","POLICE2","POLPATRIOT"
+    ],
+    "Motorcycles": [
+        "BOBBER","FAGGIO","HELLFURY","NRG900","PCJ","SANCHEZ","ZOMBIEB"
+    ],
+    "Boats": [
+        "DINGHY","JETMAX","MARQUIS","PREDATOR","REEFER","SQUALO","TUG"
+    ],
+    "Helicopters": [
+        "ANNIHILATOR","MAVERICK","POLMAV"
+    ]
+};
+
+
+// ------------------------------------------------------------
+// V5.1 PLAYER / TRAVEL / VEHICLE / WORLD LABS
+// Source-verified GTA IV natives; hardware behavior is still being tested.
+// ------------------------------------------------------------
+function healPlayer() {
+    const ped = playerPed();
+    if (!ped) return;
+    n("SET_CHAR_HEALTH", ped, 200);
+    notify("NIKO HEALED");
+}
+
+function armourPlayer() {
+    const ped = playerPed();
+    if (!ped) return;
+    n("ADD_ARMOUR_TO_CHAR", ped, 100);
+    notify("ARMOUR +100");
+}
+
+function togglePlayerInvincible() {
+    const ped = playerPed();
+    if (!ped) return;
+    playerInvincible = !playerInvincible;
+    n("SET_CHAR_INVINCIBLE", ped, playerInvincible);
+    notify("PLAYER INVINCIBLE: " + (playerInvincible ? "ON" : "OFF"));
+}
+
+function togglePlayerInvisible() {
+    const ped = playerPed();
+    if (!ped) return;
+    playerInvisible = !playerInvisible;
+    n("SET_CHAR_VISIBLE", ped, !playerInvisible);
+    notify("PLAYER INVISIBLE: " + (playerInvisible ? "ON" : "OFF"));
+}
+
+function togglePlayerFrozen() {
+    const ped = playerPed();
+    if (!ped) return;
+    playerFrozen = !playerFrozen;
+    n("FREEZE_CHAR_POSITION", ped, playerFrozen);
+    notify("PLAYER FREEZE: " + (playerFrozen ? "ON" : "OFF"));
+}
+
+function setPlayerGravity(value, label) {
+    const ped = playerPed();
+    if (!ped) return;
+    n("SET_CHAR_GRAVITY", ped, value);
+    notify("PLAYER GRAVITY: " + label);
+}
+
+function toggleWindscreenEjection() {
+    const ped = playerPed();
+    if (!ped) return;
+    playerWindscreenEject = !playerWindscreenEject;
+    n("SET_CHAR_WILL_FLY_THROUGH_WINDSCREEN", ped, playerWindscreenEject);
+    notify("WINDSCREEN EJECTION: " + (playerWindscreenEject ? "ON" : "OFF"));
+}
+
+function toggleEveryoneIgnorePlayer() {
+    const p = playerId();
+    if (p === null) return;
+    everyoneIgnorePlayer = !everyoneIgnorePlayer;
+    n("SET_EVERYONE_IGNORE_PLAYER", p, everyoneIgnorePlayer);
+    notify("EVERYONE IGNORE PLAYER: " + (everyoneIgnorePlayer ? "ON" : "OFF"));
+}
+
+function saveCurrentPosition() {
+    const pos = playerPos();
+    if (!pos) return;
+    savedPlayerPos = { x: pos.x, y: pos.y, z: pos.z };
+    notify("POSITION SAVED");
+}
+
+function teleportEntityTo(x, y, z) {
+    const car = currentCar();
+    if (car) {
+        n("SET_CAR_COORDINATES", car, x, y, z);
+        return;
+    }
+    const ped = playerPed();
+    if (ped) n("SET_CHAR_COORDINATES", ped, x, y, z);
+}
+
+function returnToSavedPosition() {
+    if (!savedPlayerPos) {
+        notify("NO SAVED POSITION");
+        return;
+    }
+    teleportEntityTo(savedPlayerPos.x, savedPlayerPos.y, savedPlayerPos.z);
+    notify("RETURNED TO SAVED POSITION");
+}
+
+function nudgePlayer(dx, dy, dz, label) {
+    const pos = playerPos();
+    if (!pos) return;
+    teleportEntityTo(pos.x + dx, pos.y + dy, pos.z + dz);
+    notify("NUDGE: " + label);
+}
+
+function withCurrentCar(fn) {
+    const car = currentCar();
+    if (!car) {
+        notify("GET IN A VEHICLE FIRST");
+        return;
+    }
+    fn(car);
+}
+
+function toggleCarDamage() {
+    carDamageEnabled = !carDamageEnabled;
+    withCurrentCar(car => n("SET_CAR_CAN_BE_DAMAGED", car, carDamageEnabled));
+    notify("CAR DAMAGE: " + (carDamageEnabled ? "ON" : "OFF"));
+}
+
+function toggleCarVisibleDamage() {
+    carVisibleDamageEnabled = !carVisibleDamageEnabled;
+    withCurrentCar(car => n("SET_CAR_CAN_BE_VISIBLY_DAMAGED", car, carVisibleDamageEnabled));
+    notify("VISIBLE DAMAGE: " + (carVisibleDamageEnabled ? "ON" : "OFF"));
+}
+
+function toggleCarProofs() {
+    carProofsEnabled = !carProofsEnabled;
+    withCurrentCar(car => n(
+        "SET_CAR_PROOFS",
+        car,
+        carProofsEnabled,
+        carProofsEnabled,
+        carProofsEnabled,
+        carProofsEnabled,
+        carProofsEnabled
+    ));
+    notify("FULL CAR PROOFS: " + (carProofsEnabled ? "ON" : "OFF"));
+}
+
+function toggleCarStrong() {
+    carStrongEnabled = !carStrongEnabled;
+    withCurrentCar(car => n("SET_CAR_STRONG", car, carStrongEnabled));
+    notify("STRONG COLLISIONS: " + (carStrongEnabled ? "ON" : "OFF"));
+}
+
+function toggleCarWatertight() {
+    carWatertightEnabled = !carWatertightEnabled;
+    withCurrentCar(car => n("SET_CAR_WATERTIGHT", car, carWatertightEnabled));
+    notify("WATERTIGHT: " + (carWatertightEnabled ? "ON" : "OFF"));
+}
+
+function toggleCarInvisible() {
+    carInvisible = !carInvisible;
+    withCurrentCar(car => n("SET_CAR_VISIBLE", car, !carInvisible));
+    notify("INVISIBLE VEHICLE: " + (carInvisible ? "ON" : "OFF"));
+}
+
+function toggleCarFrozen() {
+    carFrozen = !carFrozen;
+    withCurrentCar(car => n("FREEZE_CAR_POSITION", car, carFrozen));
+    notify("VEHICLE FREEZE: " + (carFrozen ? "ON" : "OFF"));
+}
+
+function uprightCurrentCar() {
+    withCurrentCar(car => n("SET_CAR_ON_GROUND_PROPERLY", car));
+    notify("VEHICLE UPRIGHT");
+}
+
+function setDoorLock(status, label) {
+    withCurrentCar(car => n("LOCK_CAR_DOORS", car, status));
+    notify("DOORS: " + label);
+}
+
+function setForwardSpeed(speed, label) {
+    withCurrentCar(car => n("SET_CAR_FORWARD_SPEED", car, speed));
+    notify("FORWARD SPEED: " + label);
+}
+
+function setCarTraction(value, label) {
+    withCurrentCar(car => n("SET_CAR_TRACTION", car, value));
+    notify("TRACTION: " + label);
+}
+
+function setCarLightMultiplier(value, label) {
+    withCurrentCar(car => n("SET_CAR_LIGHT_MULTIPLIER", car, value));
+    notify("LIGHT MULTIPLIER: " + label);
+}
+
+function toggleMadDrivers() {
+    madDriversEnabled = !madDriversEnabled;
+    n("SWITCH_MAD_DRIVERS", madDriversEnabled);
+    notify("MAD DRIVERS: " + (madDriversEnabled ? "ON" : "OFF"));
+}
+
+function setWind(value, label) {
+    n("FORCE_WIND", value);
+    notify("WIND: " + label);
+}
+
+// ------------------------------------------------------------
+// MENU DEFINITION HELPERS
+// ------------------------------------------------------------
+function action(label, fn) {
+    return { label, action: fn };
+}
+
+function submenu(label, getter) {
+    return { label, submenu: getter };
+}
+
+function backItem() {
+    return action("< BACK", () => goBack());
+}
+
+
+function moneyMenu() {
+    return {
+        title: "MONEY DROPS",
+        items: [
+            action("DROP $1,000", () => dropMoney(1000)),
+            action("DROP $10,000", () => dropMoney(10000)),
+            action("DROP $20,000", () => dropMoney(20000)),
+            action("DROP $50,000", () => dropMoney(50000)),
+            action("DROP $100,000", () => dropMoney(100000)),
+            action("SCATTER $60,000", () => moneyScatter(12, 5000)),
+            backItem()
+        ]
+    };
+}
+
+function cargoPresetMenu() {
+    const items = CARGO_OBJECTS.map(entry =>
+        action(entry.label, () => spawnPlaceableObject(entry.model))
+    );
+    items.push(backItem());
+    return { title: "CARGO OBJECTS", items };
+}
+
+function objectOffsetMenu() {
+    return {
+        title: "OBJECT POSITION",
+        items: [
+            action("X -0.10", () => changeObjectOffset("x", -0.10)),
+            action("X +0.10", () => changeObjectOffset("x", 0.10)),
+            action("Y -0.10", () => changeObjectOffset("y", -0.10)),
+            action("Y +0.10", () => changeObjectOffset("y", 0.10)),
+            action("Z -0.10", () => changeObjectOffset("z", -0.10)),
+            action("Z +0.10", () => changeObjectOffset("z", 0.10)),
+            action("ROT Z -5", () => changeObjectOffset("rz", -5.0)),
+            action("ROT Z +5", () => changeObjectOffset("rz", 5.0)),
+            action("RESET OFFSET", resetObjectOffset),
+            backItem()
+        ]
+    };
+}
+
+function objectPlacerMenu() {
+    return {
+        title: "OBJECT PLACER",
+        items: [
+            submenu("SPAWN CARGO OBJECT", cargoPresetMenu),
+            submenu("POSITION / ROTATE", objectOffsetMenu),
+            action("ATTACH TO CURRENT VEHICLE", attachActiveObjectToVehicle),
+            action("DETACH ACTIVE OBJECT", detachActiveObject),
+            action("DELETE ACTIVE OBJECT", deleteActiveObject),
+            action("CLEAR ALL PLACED OBJECTS", clearPlacedObjects),
+            backItem()
+        ]
+    };
+}
+
+function sandboxMenu() {
+    return {
+        title: "SANDBOX",
+        items: [
+            submenu("MONEY DROPS", moneyMenu),
+            submenu("OBJECT PLACER", objectPlacerMenu),
+            action("ISLAND ACCESS MODE: " + (accessMode ? "ON" : "OFF"), toggleAccessMode),
+            action("REPAIR CURRENT VEHICLE", fixCurrentCar),
+            backItem()
+        ]
+    };
+}
+
+
+function playerLabMenu() {
+    return {
+        title: "PLAYER LAB",
+        items: [
+            action("HEAL NIKO", healPlayer),
+            action("ARMOUR +100", armourPlayer),
+            action("INVINCIBLE: " + (playerInvincible ? "ON" : "OFF"), togglePlayerInvincible),
+            action("INVISIBLE: " + (playerInvisible ? "ON" : "OFF"), togglePlayerInvisible),
+            action("FREEZE POSITION: " + (playerFrozen ? "ON" : "OFF"), togglePlayerFrozen),
+            action("GRAVITY: NORMAL", () => setPlayerGravity(1.0, "NORMAL")),
+            action("GRAVITY: MOON 0.35", () => setPlayerGravity(0.35, "MOON")),
+            action("GRAVITY: FLOATY 0.10", () => setPlayerGravity(0.10, "FLOATY")),
+            action("WINDSCREEN EJECTION: " + (playerWindscreenEject ? "ON" : "OFF"), toggleWindscreenEjection),
+            action("EVERYONE IGNORE ME: " + (everyoneIgnorePlayer ? "ON" : "OFF"), toggleEveryoneIgnorePlayer),
+            backItem()
+        ]
+    };
+}
+
+function travelLabMenu() {
+    return {
+        title: "TRAVEL / POSITION LAB",
+        items: [
+            action("SAVE CURRENT POSITION", saveCurrentPosition),
+            action("RETURN TO SAVED POSITION", returnToSavedPosition),
+            action("NUDGE NORTH +10", () => nudgePlayer(0.0, 10.0, 0.0, "NORTH")),
+            action("NUDGE SOUTH -10", () => nudgePlayer(0.0, -10.0, 0.0, "SOUTH")),
+            action("NUDGE EAST +10", () => nudgePlayer(10.0, 0.0, 0.0, "EAST")),
+            action("NUDGE WEST -10", () => nudgePlayer(-10.0, 0.0, 0.0, "WEST")),
+            action("NUDGE UP +5", () => nudgePlayer(0.0, 0.0, 5.0, "UP")),
+            backItem()
+        ]
+    };
+}
+
+function vehicleLabMenu() {
+    return {
+        title: "VEHICLE LAB",
+        items: [
+            action("CAR DAMAGE: " + (carDamageEnabled ? "ON" : "OFF"), toggleCarDamage),
+            action("VISIBLE DAMAGE: " + (carVisibleDamageEnabled ? "ON" : "OFF"), toggleCarVisibleDamage),
+            action("FULL PROOFS: " + (carProofsEnabled ? "ON" : "OFF"), toggleCarProofs),
+            action("STRONG COLLISIONS: " + (carStrongEnabled ? "ON" : "OFF"), toggleCarStrong),
+            action("WATERTIGHT: " + (carWatertightEnabled ? "ON" : "OFF"), toggleCarWatertight),
+            action("INVISIBLE VEHICLE: " + (carInvisible ? "ON" : "OFF"), toggleCarInvisible),
+            action("FREEZE VEHICLE: " + (carFrozen ? "ON" : "OFF"), toggleCarFrozen),
+            action("UPRIGHT / FLIP RECOVERY", uprightCurrentCar),
+            action("LOCK DOORS", () => setDoorLock(2, "LOCKED")),
+            action("UNLOCK DOORS", () => setDoorLock(1, "UNLOCKED")),
+            action("BOOST SPEED 10", () => setForwardSpeed(10.0, "10")),
+            action("BOOST SPEED 25", () => setForwardSpeed(25.0, "25")),
+            action("BOOST SPEED 40", () => setForwardSpeed(40.0, "40")),
+            action("TRACTION: DRIFT 0.45", () => setCarTraction(0.45, "DRIFT")),
+            action("TRACTION: NORMAL 1.0", () => setCarTraction(1.0, "NORMAL")),
+            action("TRACTION: GRIP 1.8", () => setCarTraction(1.8, "GRIP")),
+            action("LIGHTS: DIM 0.25X", () => setCarLightMultiplier(0.25, "0.25X")),
+            action("LIGHTS: NORMAL 1X", () => setCarLightMultiplier(1.0, "1X")),
+            action("LIGHTS: BRIGHT 3X", () => setCarLightMultiplier(3.0, "3X")),
+            backItem()
+        ]
+    };
+}
+
+function worldLabMenu() {
+    return {
+        title: "WORLD LAB",
+        items: [
+            action("MAD DRIVERS: " + (madDriversEnabled ? "ON" : "OFF"), toggleMadDrivers),
+            action("WIND: CALM 0.0", () => setWind(0.0, "CALM")),
+            action("WIND: NORMAL 1.0", () => setWind(1.0, "NORMAL")),
+            action("WIND: STORM 5.0", () => setWind(5.0, "STORM")),
+            backItem()
+        ]
+    };
+}
+
+function rootMenu() {
+    return {
+        title: "DYNAMIC LIBERTY",
+        items: [
+            submenu("TACTICAL SQUAD", recruitMenu),
+            submenu("PLAYER LAB", playerLabMenu),
+            submenu("TRAVEL / POSITION LAB", travelLabMenu),
+            submenu("VEHICLE SPAWNER", vehicleCategoryMenu),
+            submenu("VEHICLE TOOLS", vehicleToolsMenu),
+            submenu("VEHICLE LAB", vehicleLabMenu),
+            submenu("TIME / CLOCK", timeMenu),
+            submenu("SANDBOX", sandboxMenu),
+            submenu("WORLD CONTROL", worldMenu),
+            submenu("WORLD LAB", worldLabMenu),
+            submenu("POLICE", policeMenu),
+            submenu("WOW MODES", wowMenu),
+            action("CLOSE TRAINER", () => { menuOpen = false; unlockPlayerControl(); })
+        ]
+    };
+}
+
+function squadRecruitMenu() {
+    return {
+        title: "SQUAD / RECRUIT",
+        items: [
+            action("RECRUIT 1   [" + bodyguardCount() + "/10]", () => recruitBodyguards(1)),
+            action("RECRUIT 5", () => recruitBodyguards(5)),
+            action("FILL SQUAD TO 10", () => recruitBodyguards(10)),
+            action("REAPPLY SQUAD PROFILE", reapplySquadProfile),
+            action("HEAL + ARMOUR ALL", healBodyguards),
+            action("DISMISS ALL", dismissBodyguards),
+            backItem()
+        ]
+    };
+}
+
+function squadOrdersMenu() {
+    return {
+        title: "TACTICAL ORDERS",
+        items: [
+            action("REGROUP / FOLLOW ME", squadRegroup),
+            action("COMBAT NEARBY ENEMIES", squadCombatNearby),
+            action("STAND DOWN", squadStandDown),
+            action("HOLD POSITION", squadHoldPosition),
+            action("GUARD CURRENT POSITION", squadGuardPosition),
+            action("BOARD MY VEHICLE", squadEnterCar),
+            backItem()
+        ]
+    };
+}
+
+function squadFormationMenu() {
+    return {
+        title: "FORMATION",
+        items: [
+            action("FORMATION ID 0", () => setSquadFormation(0)),
+            action("FORMATION ID 1", () => setSquadFormation(1)),
+            action("FORMATION ID 2", () => setSquadFormation(2)),
+            action("FORMATION ID 3", () => setSquadFormation(3)),
+            action("SPACING 1.0m", () => setSquadSpacing(1.0)),
+            action("SPACING 2.0m", () => setSquadSpacing(2.0)),
+            action("SPACING 4.0m", () => setSquadSpacing(4.0)),
+            action("SPACING 8.0m", () => setSquadSpacing(8.0)),
+            backItem()
+        ]
+    };
+}
+
+function squadLoadoutMenu() {
+    const items = SQUAD_WEAPONS.map(w =>
+        action((squadWeapon === w.id ? "* " : "") + w.label, () => setSquadWeapon(w.id, w.label))
+    );
+    items.push(backItem());
+    return { title: "SQUAD LOADOUT", items };
+}
+
+function squadAimMenu() {
+    return {
+        title: "AIM / FIRE CONTROL",
+        items: [
+            action("ACCURACY 25", () => setSquadAccuracy(25)),
+            action("ACCURACY 50", () => setSquadAccuracy(50)),
+            action("ACCURACY 75", () => setSquadAccuracy(75)),
+            action("ACCURACY 100", () => setSquadAccuracy(100)),
+            action("SHOOT RATE 40", () => setSquadShootRate(40)),
+            action("SHOOT RATE 75", () => setSquadShootRate(75)),
+            action("SHOOT RATE 100", () => setSquadShootRate(100)),
+            action("SHOOT RATE 150", () => setSquadShootRate(150)),
+            action("USE COVER: " + (squadUseCover ? "ON" : "OFF"), toggleUseCover),
+            action("COVERING FIRE: " + (squadCoveringFire ? "ON" : "OFF"), toggleCoveringFire),
+            action("CLEAR LOS ONLY: " + (squadClearLosOnly ? "ON" : "OFF"), toggleClearLos),
+            action("SIGNAL AFTER KILL: " + (squadSignalAfterKill ? "ON" : "OFF"), toggleSignalKill),
+            backItem()
+        ]
+    };
+}
+
+function squadSurvivalMenu() {
+    return {
+        title: "SURVIVABILITY",
+        items: [
+            action("HEALTH 300", () => setSquadHealth(300)),
+            action("HEALTH 500", () => setSquadHealth(500)),
+            action("HEALTH 1000", () => setSquadHealth(1000)),
+            action("HEALTH 2000", () => setSquadHealth(2000)),
+            action("INVINCIBLE: " + (squadInvincible ? "ON" : "OFF"), toggleInvincible),
+            action("HEADSHOT IMMUNE: " + (squadHeadshotImmune ? "ON" : "OFF"), toggleHeadshotImmune),
+            action("MOVE WHEN INJURED: " + (squadMoveWhenInjured ? "ON" : "OFF"), toggleMoveInjured),
+            action("DROP WEAPONS ON DEATH: " + (squadDropsWeapons ? "ON" : "OFF"), toggleDropsWeapons),
+            action("CAN BE KNOCKED OFF BIKE: " + (squadCanBeKnockedOffBike ? "ON" : "OFF"), toggleBikeKnockoff),
+            backItem()
+        ]
+    };
+}
+
+function squadVehicleAiMenu() {
+    return {
+        title: "VEHICLE CREW AI",
+        items: [
+            action("BOARD MY VEHICLE", squadEnterCar),
+            action("DRIVE-BYS: " + (squadDrivebys ? "ON" : "OFF"), toggleDrivebys),
+            action("USE CARS IN COMBAT: " + (squadUseCarsCombat ? "ON" : "OFF"), toggleCarsCombat),
+            action("LEAVE CAR IN COMBAT: " + (squadLeaveCarCombat ? "ON" : "OFF"), toggleLeaveCarCombat),
+            action("STAY IN CAR WHEN JACKED: " + (squadStayInCarWhenJacked ? "ON" : "OFF"), toggleStayCarJacked),
+            action("CANT BE DRAGGED OUT: " + (squadCantBeDraggedOut ? "ON" : "OFF"), toggleCantDragged),
+            backItem()
+        ]
+    };
+}
+
+function squadRoleMenu() {
+    return {
+        title: "ROLE PRESETS",
+        items: [
+            action("RIFLE TEAM", presetRifleTeam),
+            action("TANK TEAM", presetTankTeam),
+            action("DRIVE-BY CREW", presetDrivebyCrew),
+            action("CHAOS CREW / MINIGUN", presetChaosCrew),
+            backItem()
+        ]
+    };
+}
+
+function squadAiLabMenu() {
+    return {
+        title: "AI LAB / WEIRD GTA IV",
+        items: [
+            action("DRUNK AI: " + (squadDrunk ? "ON" : "OFF"), toggleDrunk),
+            action("BLIND RAGE: " + (squadBlindRage ? "ON" : "OFF"), toggleBlindRage),
+            action("SIGNAL AFTER KILL: " + (squadSignalAfterKill ? "ON" : "OFF"), toggleSignalKill),
+            action("CLEAR LOS ONLY: " + (squadClearLosOnly ? "ON" : "OFF"), toggleClearLos),
+            action("COVERING FIRE: " + (squadCoveringFire ? "ON" : "OFF"), toggleCoveringFire),
+            backItem()
+        ]
+    };
+}
+
+function recruitMenu() {
+    return {
+        title: "TACTICAL SQUAD [" + bodyguardCount() + "/10]",
+        items: [
+            submenu("SQUAD / RECRUIT", squadRecruitMenu),
+            submenu("TACTICAL ORDERS", squadOrdersMenu),
+            submenu("FORMATION", squadFormationMenu),
+            submenu("LOADOUT", squadLoadoutMenu),
+            submenu("AIM / FIRE CONTROL", squadAimMenu),
+            submenu("SURVIVABILITY", squadSurvivalMenu),
+            submenu("VEHICLE CREW AI", squadVehicleAiMenu),
+            submenu("ROLE PRESETS", squadRoleMenu),
+            submenu("AI LAB / WEIRD GTA IV", squadAiLabMenu),
+            backItem()
+        ]
+    };
+}
+
+function vehicleCategoryMenu() {
+    const items = [];
+    Object.keys(VEHICLES).forEach(cat => {
+        items.push(submenu(cat.toUpperCase(), () => vehicleListMenu(cat)));
+    });
+    items.push(backItem());
+    return { title: "VEHICLE SPAWNER", items };
+}
+
+function vehicleListMenu(category) {
+    const items = VEHICLES[category].map(name =>
+        action(name, () => spawnVehicle(name))
+    );
+    items.push(backItem());
+    return { title: category.toUpperCase(), items };
+}
+
+function sleeperEcuMenu() {
+    return {
+        title: "SLEEPER ECU",
+        items: [
+            action("OFF", () => setSleeperEcuLevel(0)),
+            action("TEST 0.05", () => setSleeperEcuLevel(1)),
+            action("TEST 0.15", () => setSleeperEcuLevel(2)),
+            backItem()
+        ]
+    };
+}
+
+function vehicleToolsMenu() {
+    return {
+        title: "VEHICLE TOOLS",
+        items: [
+            submenu("SLEEPER ECU", sleeperEcuMenu),
+            action("REPAIR CURRENT VEHICLE", fixCurrentCar),
+            action("CLEAN CURRENT VEHICLE", cleanCurrentCar),
+            backItem()
+        ]
+    };
+}
+
+function timeMenu() {
+    const items = [];
+    for (let h = 0; h < 24; h++) {
+        const hh = h;
+        items.push(action(String(h).padStart(2, "0") + ":00", () => setHour(hh)));
+    }
+    items.push(action(
+        "FREEZE CLOCK: " + (frozenTime ? "ON" : "OFF"),
+        toggleFreezeTime
+    ));
+    items.push(backItem());
+    return { title: "TIME / CLOCK", items };
+}
+
+function worldMenu() {
+    return {
+        title: "WORLD CONTROL",
+        items: [
+            action("IMGUI STATUS TEST", imguiDiagnostic),
+            action("AGGRESSIVE PEDS: OFF", () => setAggressiveMode(0)),
+            action("AGGRESSIVE PEDS: FISTS", () => setAggressiveMode(1)),
+            action("AGGRESSIVE PEDS: ARMED", () => setAggressiveMode(2)),
+            action("TRAFFIC: EMPTY", () => trafficDensity(0.0, "EMPTY")),
+            action("TRAFFIC: NORMAL", () => trafficDensity(1.0, "NORMAL")),
+            action("TRAFFIC: RUSH HOUR", () => trafficDensity(1.8, "RUSH HOUR")),
+            action("PEDS: EMPTY", () => pedDensity(0.0, "EMPTY")),
+            action("PEDS: NORMAL", () => pedDensity(1.0, "NORMAL")),
+            action("PEDS: CROWDED", () => pedDensity(1.8, "CROWDED")),
+            action("WORLD SPEED: 25%", () => setGameSpeed(0.25, "25%")),
+            action("WORLD SPEED: 50%", () => setGameSpeed(0.50, "50%")),
+            action("WORLD SPEED: NORMAL", () => setGameSpeed(1.0, "NORMAL")),
+            action("WORLD SPEED: 150%", () => setGameSpeed(1.5, "150%")),
+            action("TOGGLE TRAINS", toggleTrains),
+            backItem()
+        ]
+    };
+}
+
+function policeMenu() {
+    const items = [];
+    for (let i = 0; i <= 6; i++) {
+        const level = i;
+        items.push(action("WANTED LEVEL " + i, () => setWanted(level)));
+    }
+    items.push(action("TOGGLE POLICE HELIS", togglePoliceHelis));
+    items.push(backItem());
+    return { title: "POLICE", items };
+}
+
+
+function blackoutRun() {
+    frozenHour = 3;
+    n("SET_TIME_OF_DAY", 3, 0);
+    n("SET_CAR_DENSITY_MULTIPLIER", 0.55);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 0.55);
+    n("SET_PED_DENSITY_MULTIPLIER", 0.75);
+    n("SWITCH_POLICE_HELIS", false);
+    policeHelisEnabled = false;
+    notify("BLACKOUT RUN");
+}
+
+function swarmCity() {
+    n("SET_PED_DENSITY_MULTIPLIER", 2.4);
+    n("SET_CAR_DENSITY_MULTIPLIER", 0.65);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 0.65);
+    setAggressiveMode(1);
+    notify("SWARM CITY");
+}
+
+function convoyEscape() {
+    const p = playerId();
+    n("ALTER_WANTED_LEVEL", p, 5);
+    n("APPLY_WANTED_LEVEL_CHANGE_NOW", p);
+    n("SET_CAR_DENSITY_MULTIPLIER", 1.35);
+    n("SET_RANDOM_CAR_DENSITY_MULTIPLIER", 1.35);
+    n("SWITCH_POLICE_HELIS", true);
+    policeHelisEnabled = true;
+    notify("CONVOY ESCAPE");
+}
+
+function cashChaos() {
+    moneyScatter(20, 5000);
+    setAggressiveMode(1);
+    n("SET_PED_DENSITY_MULTIPLIER", 1.8);
+    notify("CASH CHAOS");
+}
+
+function wowMenu() {
+    return {
+        title: "WOW MODES",
+        items: [
+            action("MOVIE CITY", movieCity),
+            action("GHOST CITY", ghostCity),
+            action("PURGE HOUR", purgeHour),
+            action("NIGHT SIEGE", nightSiege),
+            action("FIGHT CLUB CITY", fightClubCity),
+            action("RUSH HOUR HELL", rushHourHell),
+            action("SLOW-MO MAYHEM", slowMoMayhem),
+            action("MANHUNT", manhuntMode),
+            action("BLACKOUT RUN", blackoutRun),
+            action("SWARM CITY", swarmCity),
+            action("CONVOY ESCAPE", convoyEscape),
+            action("CASH CHAOS", cashChaos),
+            action("RESET WORLD", normalWorld),
+            backItem()
+        ]
+    };
+}
+
+// ------------------------------------------------------------
+// MENU ENGINE
+// ------------------------------------------------------------
+function currentMenu() {
+    if (menuStack.length === 0) return rootMenu();
+    return menuStack[menuStack.length - 1]();
+}
+
+function openSubmenu(getter) {
+    menuStack.push(getter);
+    selected = 0;
+    markMenuDirty();
+}
+
+function goBack() {
+    if (menuStack.length > 0) {
+        menuStack.pop();
+        selected = 0;
+        markMenuDirty();
+    } else {
+        menuOpen = false;
+        unlockPlayerControl();
+    }
+}
+
+function runSelected() {
+    const menu = currentMenu();
+    if (!menu.items.length) return;
+
+    const item = menu.items[selected];
+    if (!item) return;
+
+    if (item.submenu) {
+        openSubmenu(item.submenu);
+        return;
+    }
+
+    if (item.action) {
+        item.action();
+        if (menuOpen) markMenuDirty();
+    }
+}
+
+function moveSelection(delta) {
+    const menu = currentMenu();
+    if (!menu.items.length) return;
+
+    selected += delta;
+    if (selected < 0) selected = menu.items.length - 1;
+    if (selected >= menu.items.length) selected = 0;
+    markMenuDirty();
+}
+
+// ------------------------------------------------------------
+// IMGUIREDUX MENU RENDERER — V5.1 LOCKED / INSTANT-CLEAR
+// One ImGui frame is submitted EVERY game frame, even when the trainer is
+// closed. This clears the previous render buffer immediately instead of
+// waiting for ImGuiRedux's stale-buffer timeout.
+// ------------------------------------------------------------
+const IMGUI_VISIBLE = 11;
+
+function drawImGuiMenuContents() {
+    const menu = currentMenu();
+    if (!menu || !menu.items || !menu.items.length) return;
+
+    if (selected >= menu.items.length) selected = menu.items.length - 1;
+
+    let start = Math.max(0, selected - 4);
+    let end = Math.min(menu.items.length, start + IMGUI_VISIBLE);
+    if (end - start < IMGUI_VISIBLE) {
+        start = Math.max(0, end - IMGUI_VISIBLE);
+    }
+
+    // ImGuiCond_Always = 1. Force position/size every frame so controller
+    // mouse emulation cannot drag the trainer away.
+    ImGui.SetNextWindowPos(34.0, 70.0, 1);
+    ImGui.SetNextWindowSize(430.0, 520.0, 1);
+
+    // ImGuiRedux Begin args after title/open:
+    // noTitleBar, noResize, noMove, autoResize.
+    // No titlebar + noMove + noResize = controller-only fixed trainer panel.
+    const visible = ImGui.Begin(
+        "Dynamic Liberty v5.1",
+        true,
+        true,
+        true,
+        true,
+        false
+    );
+
+    if (visible) {
+        ImGui.TextColored("DYNAMIC LIBERTY v5.1", 0.25, 0.75, 1.0, 1.0);
+        ImGui.Text(menu.title);
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        for (let i = start; i < end; i++) {
+            const item = menu.items[i];
+            const active = i === selected;
+            const suffix = item.submenu ? "  >" : "";
+            const label = (active ? "> " : "  ") + item.label + suffix;
+
+            if (active) {
+                ImGui.TextColored(label, 1.0, 0.82, 0.20, 1.0);
+            } else {
+                ImGui.Text(label);
+            }
+            ImGui.Spacing();
+        }
+
+        ImGui.Separator();
+        ImGui.Text(
+            (selected + 1) + "/" + menu.items.length +
+            "   DPAD MOVE   A SELECT   B BACK"
+        );
+
+        if (menu.title.indexOf("TACTICAL") >= 0 || menu.title.indexOf("SQUAD") >= 0 ||
+            menu.title.indexOf("FORMATION") >= 0 || menu.title.indexOf("AI LAB") >= 0) {
+            ImGui.Text(
+                "Squad " + bodyguardCount() + "/10 | Weapon " + squadWeapon +
+                " | Acc " + squadAccuracy + " | Spacing " + squadSpacing.toFixed(1)
+            );
+        }
+    }
+
+    ImGui.End();
+}
+
+function renderImGuiFrame() {
+    ImGui.BeginFrame("DYNAMIC_LIBERTY_V51_FRAME");
+    ImGui.SetCursorVisible(false);
+
+    if (menuOpen) {
+        drawImGuiMenuContents();
+    }
+
+    ImGui.EndFrame();
+}
+
+function markMenuDirty() {}
+function renderMenu(force = false) {}
+
+// ------------------------------------------------------------
+// BACKGROUND WORLD UPDATES
+// ------------------------------------------------------------
+function worldUpdate() {
+    const now = Date.now();
+
+    if (frozenTime && now - lastFreezeUpdate >= 300) {
+        lastFreezeUpdate = now;
+        n("SET_TIME_OF_DAY", frozenHour, 0);
+    }
+
+    if (aggressiveMode && now - lastAggroPulse >= 1100) {
+        lastAggroPulse = now;
+        pulseAggressivePeds();
+    }
+
+    updateBodyguardSquad();
+
+    applySleeperEcuMap();
+}
+
+// ------------------------------------------------------------
+// FAST CONTROLLER MENU INPUT
+// Tap = instant. Hold D-pad = quick repeat. A/B use release latches so
+// B performs exactly one back action per press.
+// ------------------------------------------------------------
+let navHeld = 0;
+let navRepeatAt = 0;
+let aLatch = false;
+let bLatch = false;
+
+function updateMenuInput() {
+    const now = Date.now();
+
+    const up = btnPressed(BTN.UP);
+    const down = btnPressed(BTN.DOWN);
+
+    let dir = 0;
+    if (up && !down) dir = -1;
+    if (down && !up) dir = 1;
+
+    if (dir !== 0) {
+        if (navHeld !== dir) {
+            navHeld = dir;
+            moveSelection(dir);
+            navRepeatAt = now + 230;
+        } else if (now >= navRepeatAt) {
+            moveSelection(dir);
+            navRepeatAt = now + 85;
+        }
+    } else {
+        navHeld = 0;
+    }
+
+    const a = btnPressed(BTN.A);
+    if (a && !aLatch) {
+        aLatch = true;
+        runSelected();
+    } else if (!a) {
+        aLatch = false;
+    }
+
+    const b = btnPressed(BTN.B);
+    if (b && !bLatch) {
+        bLatch = true;
+        goBack();
+    } else if (!b) {
+        bLatch = false;
+    }
+}
+
+// ------------------------------------------------------------
+// MAIN LOOP
+// ------------------------------------------------------------
+while (true) {
+    const lb = btnPressed(BTN.LB);
+    const rb = btnPressed(BTN.RB);
+
+    if (lb && rb) {
+        if (!comboLatch) {
+            comboLatch = true;
+            menuOpen = !menuOpen;
+
+            if (menuOpen) {
+                menuStack = [];
+                selected = 0;
+                aLatch = true;
+                bLatch = true;
+                navHeld = 0;
+                lockPlayerControl();
+                markMenuDirty();
+            } else {
+                unlockPlayerControl();
+                // v5.1: no lingering close notification; ImGui frame clears immediately.
+            }
+        }
+    } else {
+        comboLatch = false;
+    }
+
+    if (menuOpen) {
+        updateMenuInput();
+
+    } else {
+        // Release latches outside the trainer.
+        if (!btnPressed(BTN.A)) aLatch = false;
+        if (!btnPressed(BTN.B)) bLatch = false;
+    }
+
+    renderImGuiFrame();
+    worldUpdate();
+    wait(0);
+}
