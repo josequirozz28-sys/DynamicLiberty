@@ -1,0 +1,158 @@
+DYNAMIC LIBERTY v6.1.4 — AFTERMATH + EMS RESPONSE ALPHA
+Date: 2026-08-15
+Base: v6.1.3 IMMERSION + POLICE RESPONSE ALPHA
+
+BUILD
+-----
+v6.1.3 was reported working wonderfully on the Steam Deck and is the rollback /
+known-good base for this update. v6.1.4 extends that proven City War response
+without touching controller input, ImGui behavior, curated gang factions, or the
+v6.1.2 spawn-stability fixes.
+
+NEW FEATURES
+------------
+1. CITY WAR AFTERMATH STATE
+   - City War lifecycle is now:
+       OFF -> STARTING -> ACTIVE -> ENDING -> AFTERMATH -> OFF
+   - New END WAR -> EMS AFTERMATH command stops reinforcements but lets the
+     current gang threat resolve instead of instantly deleting the scene.
+   - Existing police keep fighting during ENDING.
+   - No new gang reinforcements, carjacking assignments, or new police cruisers
+     are created once ENDING begins.
+   - AFTERMATH begins only when no live City War gang fighters remain.
+   - If ENDING stalls for ~25 sec, remaining gang fighters are told to flee and
+     handed into the existing on-screen-safe escaper lifecycle instead of being popped.
+   - A finite war also enters AFTERMATH automatically when reinforcements are OFF
+     (or the lifetime spawn budget is exhausted) and the threat is cleared.
+   - FORCE CLEANUP / OFF remains available for immediate hard reset.
+
+2. POLICE-ONLY EMS RESPONSE
+   - EMS is enabled by default and only runs during City War AFTERMATH.
+   - Eligible casualties come ONLY from warPoliceUnits[].cops[].
+   - Gang fighters, civilians, bodyguards, Aggressive Peds, and Niko are never
+     added to the EMS casualty list.
+   - One ambulance is staged from an off-camera road node and physically drives
+     to the police casualties with siren enabled.
+   - Two M_Y_PMEDIC paramedics deploy from the ambulance.
+   - Each medic is assigned a different Dynamic Liberty police casualty.
+   - Maximum treatment attempts per aftermath: 2.
+   - Medics approach their assigned officer, pause to render an aid beat, then
+     use REVIVE_INJURED_PED followed by a conservative health/task reset.
+   - Living injured officers can also receive treatment.
+   - After treatment, medics attempt to re-board the ambulance and drive away.
+   - EMS spawn retries are bounded; after 4 failed attempts the aftermath remains stable
+     instead of retrying forever.
+   - EMS actors/ambulance use the same on-screen-safe release rule as v6.1.3:
+     no automatic MARK_* handoff while the player can see them.
+
+3. THIRD POLICE RESPONSE UNIT
+   - Police response hard cap increased from 2 cruisers to 3.
+   - Balance mapping is now:
+       3v3 -> 1 cruiser / normally 2 cops
+       5v5 -> 2 cruisers / normally 4 cops
+       8v8 -> up to 3 cruisers / normally 6 cops
+   - The third unit follows the existing reinforcement delay instead of appearing
+     all at once.
+   - ENDING/AFTERMATH never dispatch additional police units.
+
+4. POLICE CASUALTY PRESERVATION
+   - A fully downed scripted police unit is no longer automatically handed back
+     to GTA IV before AFTERMATH when EMS is enabled.
+   - This keeps valid cop handles available for the paramedic system.
+   - Surviving cops secure the scene during AFTERMATH rather than repeatedly
+     receiving TASK_COMBAT after the last gang member falls.
+
+5. SCENARIO UPDATE
+   - CITY WAR 5v5 + POLICE is now CITY WAR 5v5 + POLICE + EMS.
+   - The scenario disables gang reinforcements after the initial 5v5 so it has a
+     natural conclusion and can demonstrate the full:
+       GANG FIGHT -> POLICE RESPONSE -> AFTERMATH -> EMS RESPONSE
+     chain without requiring a manual END WAR command.
+
+RESEARCH / VERIFIED CONTRACTS
+-----------------------------
+- Sanny Builder gta_iv.json 0.108 confirms REVIVE_INJURED_PED(Char) as a real
+  one-argument GTA IV native.
+- TASK_GOTO_CHAR_OFFSET is a verified 5-argument GTA IV task:
+  ped, target, duration, offsetRight, offsetFront. It is used for medic approach.
+- TASK_CAR_MISSION_COORS_TARGET remains the proven physical vehicle-arrival path.
+- GTAMods' GTA IV model table confirms AMBULANCE and M_Y_PMEDIC model names.
+- CLEO Redux documentation confirms Sanny Builder definitions are the runtime
+  interface contract, and v1.5.0 still requires gta_iv.json 0.108.
+- CREATE_EMERGENCY_SERVICES_CAR_RETURN_DRIVER was researched and is present in
+  the current GTA IV definitions as a conditional multi-output native. Production
+  EMS deliberately does NOT depend on it yet: v6.1.4 reuses our already-hardware-
+  proven road-node + CREATE_CAR + CREATE_CHAR_INSIDE_CAR path. This avoids making
+  the new system depend on an untested CE return/handoff behavior.
+- No direct memory editing or executable patching was added.
+
+STEAM DECK TEST CHECKLIST
+-------------------------
+BASE REGRESSION:
+[ ] Fresh boot; trainer opens/closes with LB+RB.
+[ ] 3v3 / 5v5 / 8v8 still spawn curated factions correctly.
+[ ] Bodyguards still attack City War fighters.
+[ ] Police response still physically drives into the war.
+[ ] Visible cleanup protection still works.
+
+THIRD POLICE UNIT:
+[ ] 3v3 produces max 1 scripted cruiser.
+[ ] 5v5 produces max 2 scripted cruisers.
+[ ] 8v8 can produce a third cruiser after the normal reinforcement delay.
+[ ] Third cruiser drives in naturally; it does not pop in at the battle center.
+[ ] Observe FPS with 8v8 + 3 police cruisers.
+
+MANUAL AFTERMATH / EMS:
+[ ] Start 5v5 or 8v8 with Police Response + EMS ON.
+[ ] Allow at least one scripted officer to be killed/injured.
+[ ] Select END WAR -> EMS AFTERMATH.
+[ ] No new gang reinforcements appear.
+[ ] Existing cops continue fighting remaining gang members.
+[ ] Once all gang threats are gone, state changes ENDING -> AFTERMATH.
+[ ] Ambulance waits ~5 sec, then approaches physically with siren.
+[ ] Two paramedics exit.
+[ ] Medics approach ONLY scripted police casualties.
+[ ] Medics ignore dead gang fighters/civilians/bodyguards.
+[ ] At most 2 police casualties are treated.
+[ ] Watch whether REVIVE_INJURED_PED gets a dead officer visibly back up cleanly.
+[ ] Report any ragdoll/get-up weirdness; this is the main native behavior still
+    requiring real Complete Edition hardware validation.
+[ ] Medics attempt to return to ambulance after treatment.
+[ ] Ambulance/medics never visibly pop out while on-screen.
+
+AUTOMATIC SCENARIO:
+[ ] Run CITY WAR 5v5 + POLICE + EMS.
+[ ] Confirm initial war does NOT endlessly replenish.
+[ ] Police arrive.
+[ ] After the last gang fighter falls, AFTERMATH starts automatically.
+[ ] If police casualties exist, EMS dispatches.
+[ ] If there are no police casualties, no pointless ambulance is spawned.
+
+DIAGNOSTICS:
+[ ] POLICE RESPONSE STATUS shows max /3 and casualty count.
+[ ] EMS STATUS reports IDLE/ENROUTE/DEPLOYING/TREATING/RETURNING/LEAVING.
+[ ] If ambulance fails, report EMS FAILS + LAST.
+
+STRESS:
+[ ] 8v8 + 3 police cruisers + EMS aftermath for 5-10 minutes.
+[ ] Optional: repeat with 5 bodyguards first; then 10 if FPS remains acceptable.
+[ ] Watch pathfinding, task stalls, ambulance arrival, visible cleanup, and FPS.
+
+KNOWN / INTENTIONAL LIMITS
+--------------------------
+- EMS revival is ALPHA. REVIVE_INJURED_PED is verified, but the exact GTA IV CE
+  visual get-up/ragdoll transition is not considered proven until this build is
+  tested on the user's hardware.
+- No guessed CPR animation name was added. The first alpha uses approach + aid
+  pause + revive so an unverified animation dictionary cannot break the feature.
+- EMS treats a maximum of two police casualties per aftermath.
+- Police units and EMS are still outside the shared MAX_MANAGED_ACTORS registry;
+  global Dynamic Liberty resource budgeting remains a future milestone.
+- Three cruisers raises the worst-case actor/vehicle load. The LCD Steam Deck
+  stress test is required before increasing it further.
+- ImGui Debug underlay remains intentionally deferred.
+
+NEXT
+----
+If v6.1.4 passes, freeze it as the new known-good baseline and move to the first
+Liberty Pulse persistent Zone Memory / Heat foundation or Gang Pursuit prototype.
